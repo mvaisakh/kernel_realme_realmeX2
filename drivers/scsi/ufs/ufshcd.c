@@ -49,6 +49,11 @@
 #include "ufs-debugfs.h"
 #include "ufs-qcom.h"
 
+#ifdef VENDOR_EDIT
+//zhenjian Jiang@PSW.BSP.Storage.UFS, 2018-05-04 add for ufs device in /proc/devinfo 
+#include <soc/oppo/device_info.h>
+#endif
+
 #ifdef CONFIG_DEBUG_FS
 
 static int ufshcd_tag_req_type(struct request *rq)
@@ -407,7 +412,6 @@ static struct ufs_dev_fix ufs_fixups[] = {
 		UFS_DEVICE_NO_FASTAUTO),
 	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL,
 		UFS_DEVICE_QUIRK_HOST_PA_TACTIVATE),
-	UFS_FIX(UFS_VENDOR_SAMSUNG, UFS_ANY_MODEL, UFS_DEVICE_NO_VCCQ),
 	UFS_FIX(UFS_VENDOR_TOSHIBA, UFS_ANY_MODEL,
 		UFS_DEVICE_QUIRK_DELAY_BEFORE_LPM),
 	UFS_FIX(UFS_VENDOR_TOSHIBA, UFS_ANY_MODEL,
@@ -476,6 +480,7 @@ static int ufshcd_config_vreg(struct device *dev,
 		struct ufs_vreg *vreg, bool on);
 static int ufshcd_enable_vreg(struct device *dev, struct ufs_vreg *vreg);
 static int ufshcd_disable_vreg(struct device *dev, struct ufs_vreg *vreg);
+static bool ufshcd_is_g4_supported(struct ufs_hba *hba);
 
 #if IS_ENABLED(CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND)
 static struct devfreq_simple_ondemand_data ufshcd_ondemand_data = {
@@ -1746,8 +1751,8 @@ static int ufshcd_clock_scaling_prepare(struct ufs_hba *hba)
 	 * make sure that there are no outstanding requests when
 	 * clock scaling is in progress
 	 */
-	down_write(&hba->lock);
 	ufshcd_scsi_block_requests(hba);
+	down_write(&hba->lock);
 	if (ufshcd_wait_for_doorbell_clr(hba, DOORBELL_CLR_TOUT_US)) {
 		ret = -EBUSY;
 		up_write(&hba->lock);
@@ -2766,8 +2771,8 @@ static void __ufshcd_set_auto_hibern8_timer(struct ufs_hba *hba,
 {
 	pm_runtime_get_sync(hba->dev);
 	ufshcd_hold_all(hba);
-	down_write(&hba->lock);
 	ufshcd_scsi_block_requests(hba);
+	down_write(&hba->lock);
 	/* wait for all the outstanding requests to finish */
 	ufshcd_wait_for_doorbell_clr(hba, U64_MAX);
 	ufshcd_set_auto_hibern8_timer(hba, delay_ms);
@@ -3696,13 +3701,9 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 	err = ufshcd_get_read_lock(hba, cmd->device->lun);
 	if (unlikely(err < 0)) {
 		if (err == -EPERM) {
-			if (!ufshcd_vops_crypto_engine_get_req_status(hba)) {
-				set_host_byte(cmd, DID_ERROR);
-				cmd->scsi_done(cmd);
-				return 0;
-			} else {
-				return SCSI_MLQUEUE_HOST_BUSY;
-			}
+			set_host_byte(cmd, DID_ERROR);
+			cmd->scsi_done(cmd);
+			return 0;
 		}
 		if (err == -EAGAIN)
 			return SCSI_MLQUEUE_HOST_BUSY;
@@ -6400,6 +6401,16 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
 					blk_update_latency_hist(&hba->io_lat_s,
 						(rq_data_dir(req) == READ),
 						delta_us);
+#ifdef VENDOR_EDIT
+//yh@BSP.Storage.UFS, 2019-02-19 add for ufs io latency info calculate
+					if (bio_has_data(req->bio) && (delta_us > 5000))
+					{
+						trace_printk("ufs_io_latency:%06lld us, io_type:%s, LBA:%08x, size:%d\n",
+								delta_us, (rq_data_dir(req) == READ) ? "R" : "W",
+								req->bio->bi_iter.bi_sector,
+								cpu_to_be32(cmd->sdb.length));
+					}
+#endif
 				}
 			}
 
@@ -7161,10 +7172,8 @@ static void ufshcd_rls_handler(struct work_struct *work)
 
 	hba = container_of(work, struct ufs_hba, rls_work);
 	pm_runtime_get_sync(hba->dev);
-	down_write(&hba->lock);
 	ufshcd_scsi_block_requests(hba);
-	if (ufshcd_is_shutdown_ongoing(hba))
-		goto out;
+	down_write(&hba->lock);
 	ret = ufshcd_wait_for_doorbell_clr(hba, U64_MAX);
 	if (ret) {
 		dev_err(hba->dev,
@@ -8144,7 +8153,7 @@ static int ufshcd_set_low_vcc_level(struct ufs_hba *hba,
 	struct ufs_vreg *vreg = hba->vreg_info.vcc;
 
 	/* Check if device supports the low voltage VCC feature */
-	if (dev_desc->wspecversion < 0x300)
+	if (dev_desc->wspecversion < 0x300 && !ufshcd_is_g4_supported(hba))
 		return 0;
 
 	/*
@@ -8228,6 +8237,7 @@ static int ufshcd_scsi_add_wlus(struct ufs_hba *hba)
 		goto out;
 	}
 	scsi_device_put(hba->sdev_ufs_device);
+
 
 	if (is_bootable_dev) {
 		sdev_boot = __scsi_add_device(hba->host, 0, 0,
@@ -8695,6 +8705,34 @@ out:
 }
 
 /**
+ * ufshcd_is_g4_supported - check if device supports HS-G4
+ * @hba: per-adapter instance
+ *
+ * Returns True if device supports HS-G4, False otherwise.
+ */
+static bool ufshcd_is_g4_supported(struct ufs_hba *hba)
+{
+	int ret;
+	u32 tx_hsgear = 0;
+
+	/* check device capability */
+	ret = ufshcd_dme_peer_get(hba,
+			UIC_ARG_MIB_SEL(TX_HSGEAR_CAPABILITY,
+			UIC_ARG_MPHY_TX_GEN_SEL_INDEX(0)),
+			&tx_hsgear);
+	if (ret) {
+		dev_err(hba->dev, "%s: Failed getting peer TX_HSGEAR_CAPABILITY. err = %d\n",
+			__func__, ret);
+		return false;
+	}
+
+	if (tx_hsgear == UFS_HS_G4)
+		return true;
+	else
+		return false;
+}
+
+/**
  * ufshcd_probe_hba - probe hba to detect device and initialize
  * @hba: per-adapter instance
  *
@@ -8746,7 +8784,13 @@ reinit:
 		goto out;
 	}
 
-	if (card.wspecversion >= 0x300 && !hba->reinit_g4_rate_A) {
+	/*
+	 * Note: Some UFS 3.0 devices may still advertise UFS specification
+	 * version as 2.1. So let's also read the TX_HSGEAR_CAPABILITY from
+	 * device to know if device support HS-G4 or not.
+	 */
+	if ((card.wspecversion >= 0x300 || ufshcd_is_g4_supported(hba)) &&
+	    !hba->reinit_g4_rate_A) {
 		unsigned long flags;
 		int err;
 
@@ -8778,13 +8822,10 @@ reinit:
 	ufshcd_tune_unipro_params(hba);
 
 	ufshcd_apply_pm_quirks(hba);
-	if (card.wspecversion < 0x300) {
-		ret = ufshcd_set_vccq_rail_unused(hba,
-			(hba->dev_info.quirks & UFS_DEVICE_NO_VCCQ) ?
-			true : false);
-		if (ret)
-			goto out;
-	}
+	ret = ufshcd_set_vccq_rail_unused(hba,
+		(hba->dev_info.quirks & UFS_DEVICE_NO_VCCQ) ? true : false);
+	if (ret)
+		goto out;
 
 	/* UFS device is also active now */
 	ufshcd_set_ufs_dev_active(hba);
