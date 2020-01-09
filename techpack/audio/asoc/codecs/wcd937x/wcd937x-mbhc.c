@@ -1,4 +1,4 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,6 +27,16 @@
 #include "../wcdcal-hwdep.h"
 #include "../wcd-mbhc-v2-api.h"
 #include "internal.h"
+
+#ifdef pr_debug
+#undef pr_debug
+#define pr_debug pr_warning
+#endif
+
+#ifdef dev_dbg
+#undef dev_dbg
+#define dev_dbg dev_err
+#endif
 
 #define WCD937X_ZDET_SUPPORTED          true
 /* Z value defined in milliohm */
@@ -545,13 +555,6 @@ static void wcd937x_wcd_mbhc_calc_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
 	regmap_update_bits(wcd937x->regmap,
 			   WCD937X_ANA_MBHC_MECH, 0x01, 0x00);
 
-	/*
-	 * Disable surge protection before impedance detection.
-	 * This is done to give correct value for high impedance.
-	 */
-	regmap_update_bits(wcd937x->regmap,
-			   WCD937X_HPH_SURGE_HPHLR_SURGE_EN, 0xC0, 0x00);
-
 	/* First get impedance on Left */
 	d1 = d1_a[1];
 	zdet_param_ptr = &zdet_param[1];
@@ -661,9 +664,6 @@ right_ch_impedance:
 		mbhc->hph_type = WCD_MBHC_HPH_MONO;
 	}
 
-	/* Enable surge protection again after impedance detection */
-	regmap_update_bits(wcd937x->regmap,
-			   WCD937X_HPH_SURGE_HPHLR_SURGE_EN, 0xC0, 0xC0);
 zdet_complete:
 	snd_soc_write(codec, WCD937X_ANA_MBHC_BTN5, reg0);
 	snd_soc_write(codec, WCD937X_ANA_MBHC_BTN6, reg1);
@@ -798,15 +798,6 @@ static void wcd937x_mbhc_moisture_polling_ctrl(struct wcd_mbhc *mbhc,
 			0x04, (enable << 2));
 }
 
-static void wcd937x_mbhc_bcs_enable(struct wcd_mbhc *mbhc,
-						  bool bcs_enable)
-{
-	if (bcs_enable)
-		wcd937x_disable_bcs_before_slow_insert(mbhc->codec, false);
-	else
-		wcd937x_disable_bcs_before_slow_insert(mbhc->codec, true);
-}
-
 static const struct wcd_mbhc_cb mbhc_cb = {
 	.request_irq = wcd937x_mbhc_request_irq,
 	.irq_control = wcd937x_mbhc_irq_control,
@@ -831,7 +822,6 @@ static const struct wcd_mbhc_cb mbhc_cb = {
 	.mbhc_get_moisture_status = wcd937x_mbhc_get_moisture_status,
 	.mbhc_moisture_polling_ctrl = wcd937x_mbhc_moisture_polling_ctrl,
 	.mbhc_moisture_detect_en = wcd937x_mbhc_moisture_detect_en,
-	.bcs_enable = wcd937x_mbhc_bcs_enable,
 };
 
 static int wcd937x_get_hph_type(struct snd_kcontrol *kcontrol,
@@ -1077,9 +1067,9 @@ int wcd937x_mbhc_init(struct wcd937x_mbhc **mbhc, struct snd_soc_codec *codec,
 	/* Setting default mbhc detection logic to ADC */
 	wcd_mbhc->mbhc_detection_logic = WCD_DETECTION_ADC;
 
-	pdata = dev_get_platdata(codec->dev);
+	pdata = dev_get_platdata(codec->component.dev);
 	if (!pdata) {
-		dev_err(codec->dev, "%s: pdata pointer is NULL\n",
+		dev_err(codec->component.dev, "%s: pdata pointer is NULL\n",
 			__func__);
 		ret = -EINVAL;
 		goto err;

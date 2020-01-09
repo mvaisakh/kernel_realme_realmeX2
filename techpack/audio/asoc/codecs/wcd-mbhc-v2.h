@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -138,7 +138,14 @@ do {                                                    \
 				  SND_JACK_BTN_2 | SND_JACK_BTN_3 | \
 				  SND_JACK_BTN_4 | SND_JACK_BTN_5)
 #define OCP_ATTEMPT 20
+#ifndef VENDOR_EDIT
+/*Jianfeng.Qiu@PSW.MM.AudioDriver.HeadsetDet, 2017/04/10,
+ *Modify for headphone detect.
+ */
 #define HS_DETECT_PLUG_TIME_MS (3 * 1000)
+#else /* VENDOR_EDIT */
+#define HS_DETECT_PLUG_TIME_MS (5 * 1000)
+#endif /* VENDOR_EDIT */
 #define SPECIAL_HS_DETECT_TIME_MS (2 * 1000)
 #define MBHC_BUTTON_PRESS_THRESHOLD_MIN 250
 #define GND_MIC_SWAP_THRESHOLD 4
@@ -460,8 +467,6 @@ struct wcd_mbhc_register {
 };
 
 struct wcd_mbhc_cb {
-	void (*bcs_enable)
-	(struct wcd_mbhc *mbhc, bool bcs_enable);
 	int (*enable_mb_source)(struct wcd_mbhc *, bool);
 	void (*trim_btn_reg)(struct snd_soc_codec *);
 	void (*compute_impedance)(struct wcd_mbhc *, uint32_t *, uint32_t *);
