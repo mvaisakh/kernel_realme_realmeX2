@@ -23,7 +23,6 @@
 #include <linux/of_platform.h>
 #include <linux/poll.h>
 #include <linux/regulator/consumer.h>
-#include <linux/sizes.h>
 #include <linux/thermal.h>
 #include <linux/soc/qcom/llcc-qcom.h>
 #include <linux/soc/qcom/cdsprm_cxlimit.h>
@@ -38,8 +37,8 @@
  */
 #define CLASS_NAME              "npu"
 #define DRIVER_NAME             "msm_npu"
-#define DDR_MAPPED_START_ADDR   0x00000000
-#define DDR_MAPPED_SIZE         (SZ_1G * 4ULL)
+#define DDR_MAPPED_START_ADDR   0x80000000
+#define DDR_MAPPED_SIZE         0x60000000
 
 #define MBOX_OP_TIMEOUTMS 1000
 
@@ -1484,11 +1483,6 @@ static int npu_exec_network(struct npu_client *client,
 		return -EINVAL;
 	}
 
-	if (!req.patching_required) {
-		pr_err("Only support patched network");
-		return -EINVAL;
-	}
-
 	ret = npu_host_exec_network(client, &req);
 
 	if (ret) {
@@ -1519,8 +1513,7 @@ static int npu_exec_network_v2(struct npu_client *client,
 		return -EFAULT;
 	}
 
-	if ((req.patch_buf_info_num > NPU_MAX_PATCH_NUM) ||
-		(req.patch_buf_info_num == 0)) {
+	if (req.patch_buf_info_num > NPU_MAX_PATCH_NUM) {
 		pr_err("Invalid patch buf info num %d[max:%d]\n",
 			req.patch_buf_info_num, NPU_MAX_PATCH_NUM);
 		return -EINVAL;
