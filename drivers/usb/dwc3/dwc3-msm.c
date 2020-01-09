@@ -1116,7 +1116,7 @@ static void gsi_endxfer_for_ep(struct usb_ep *ep)
 }
 
 /**
- * Allocates Buffers and TRBs. Configures TRBs for GSI EPs.
+ * Allocates and configures TRBs for GSI EPs.
  *
  * @usb_ep - pointer to usb_ep instance.
  * @request - pointer to GSI request.
@@ -1126,8 +1126,7 @@ static void gsi_endxfer_for_ep(struct usb_ep *ep)
 static int gsi_prepare_trbs(struct usb_ep *ep, struct usb_gsi_request *req)
 {
 	int i = 0;
-	size_t len;
-	dma_addr_t buffer_addr;
+	dma_addr_t buffer_addr = req->dma;
 	struct dwc3_ep *dep = to_dwc3_ep(ep);
 	struct dwc3		*dwc = dep->dwc;
 	struct dwc3_trb *trb;
@@ -1141,24 +1140,6 @@ static int gsi_prepare_trbs(struct usb_ep *ep, struct usb_gsi_request *req)
 		return -ESHUTDOWN;
 	}
 
-	/* Allocate TRB buffers */
-
-	len = req->buf_len * req->num_bufs;
-	req->buf_base_addr = dma_zalloc_coherent(dwc->sysdev, len, &req->dma,
-					GFP_KERNEL);
-	if (!req->buf_base_addr) {
-		dev_err(dwc->dev, "%s: buf_base_addr allocate failed %s\n",
-				dep->name);
-		return -ENOMEM;
-	}
-
-	dma_get_sgtable(dwc->sysdev, &req->sgt_data_buff, req->buf_base_addr,
-			req->dma, len);
-
-	buffer_addr = req->dma;
-
-	/* Allocate and configgure TRBs */
-
 	dep->trb_pool = dma_zalloc_coherent(dwc->sysdev,
 				num_trbs * sizeof(struct dwc3_trb),
 				&dep->trb_pool_dma, GFP_KERNEL);
@@ -1166,7 +1147,7 @@ static int gsi_prepare_trbs(struct usb_ep *ep, struct usb_gsi_request *req)
 	if (!dep->trb_pool) {
 		dev_err(dep->dwc->dev, "failed to alloc trb dma pool for %s\n",
 				dep->name);
-		goto free_trb_buffer;
+		return -ENOMEM;
 	}
 
 	dep->num_trbs = num_trbs;
@@ -1263,16 +1244,10 @@ static int gsi_prepare_trbs(struct usb_ep *ep, struct usb_gsi_request *req)
 	}
 
 	return 0;
-
-free_trb_buffer:
-	dma_free_coherent(dwc->sysdev, len, req->buf_base_addr, req->dma);
-	req->buf_base_addr = NULL;
-	sg_free_table(&req->sgt_data_buff);
-	return -ENOMEM;
 }
 
 /**
- * Frees TRBs and buffers for GSI EPs.
+ * Frees TRBs for GSI EPs.
  *
  * @usb_ep - pointer to usb_ep instance.
  *
@@ -1295,12 +1270,6 @@ static void gsi_free_trbs(struct usb_ep *ep, struct usb_gsi_request *req)
 		dep->trb_pool_dma = 0;
 	}
 	sg_free_table(&req->sgt_trb_xfer_ring);
-
-	/* free TRB buffers */
-	dma_free_coherent(dwc->sysdev, req->buf_len * req->num_bufs,
-		req->buf_base_addr, req->dma);
-	req->buf_base_addr = NULL;
-	sg_free_table(&req->sgt_data_buff);
 }
 /**
  * Configures GSI EPs. For GSI EPs we need to set interrupter numbers.
@@ -1911,13 +1880,8 @@ static void dwc3_msm_notify_event(struct dwc3 *dwc, unsigned int event,
 		reg |= DWC3_GCTL_CORESOFTRESET;
 		dwc3_msm_write_reg(mdwc->base, DWC3_GCTL, reg);
 
-		/*
-		 * If core could not recover after MAX_ERROR_RECOVERY_TRIES
-		 * skip the restart USB work and keep the core in softreset
-		 * state
-		 */
-		if (dwc->retries_on_error < MAX_ERROR_RECOVERY_TRIES)
-			schedule_work(&mdwc->restart_usb_work);
+		/* restart USB which performs full reset and reconnect */
+		schedule_work(&mdwc->restart_usb_work);
 		break;
 	case DWC3_CONTROLLER_RESET_EVENT:
 		dev_dbg(mdwc->dev, "DWC3_CONTROLLER_RESET_EVENT received\n");
@@ -2624,13 +2588,6 @@ static int dwc3_msm_resume(struct dwc3_msm *mdwc)
 
 	dev_dbg(mdwc->dev, "%s: exiting lpm\n", __func__);
 
-	/*
-	 * If h/w exited LPM without any events, ensure
-	 * h/w is reset before processing any new events.
-	 */
-	if (!mdwc->vbus_active && mdwc->id_state)
-		set_bit(WAIT_FOR_LPM, &mdwc->inputs);
-
 	mutex_lock(&mdwc->suspend_resume_mutex);
 	if (!atomic_read(&dwc->in_lpm)) {
 		dev_dbg(mdwc->dev, "%s: Already resumed\n", __func__);
@@ -2859,7 +2816,7 @@ static void dwc3_resume_work(struct work_struct *w)
 			dwc->maximum_speed = USB_SPEED_HIGH;
 
 		if (mdwc->override_usb_speed &&
-			mdwc->override_usb_speed <= dwc->maximum_speed) {
+				mdwc->override_usb_speed < dwc->maximum_speed) {
 			dwc->maximum_speed = mdwc->override_usb_speed;
 			dwc->gadget.max_speed = dwc->maximum_speed;
 			dbg_event(0xFF, "override_speed",
@@ -4444,7 +4401,14 @@ static int dwc3_msm_gadget_vbus_draw(struct dwc3_msm *mdwc, unsigned int mA)
 	pval.intval = 1000 * mA;
 
 set_prop:
+#ifdef VENDOR_EDIT
+/* Yichun.Chen  PSW.BSP.CHG  2019-05-05  for charging */
+	dev_info(mdwc->dev, "[OPPO_CHG]Avail curr from USB = %u, pre max_power = %u\n", mA, mdwc->max_power);
+	if (mA == 0 || mA == 2)
+		return 0;
+#else
 	dev_info(mdwc->dev, "Avail curr from USB = %u\n", mA);
+#endif
 	ret = power_supply_set_property(mdwc->usb_psy,
 				POWER_SUPPLY_PROP_SDP_CURRENT_MAX, &pval);
 	if (ret) {
@@ -4456,6 +4420,11 @@ set_prop:
 	return 0;
 }
 
+#ifdef VENDOR_EDIT
+/* Yichun.Chen  PSW.BSP.CHG  2019-08-07  for detect CDP */
+#define DWC3_DCTL		0xc704 
+#define DWC3_DCTL_RUN_STOP	BIT(31) 
+#endif
 
 /**
  * dwc3_otg_sm_work - workqueue function.
@@ -4472,6 +4441,11 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 	int ret = 0;
 	unsigned long delay = 0;
 	const char *state;
+
+#ifdef VENDOR_EDIT
+/* Yichun.Chen  PSW.BSP.CHG  2019-08-07  for detect CDP */
+	u32 reg; 
+#endif
 
 	if (mdwc->dwc3)
 		dwc = platform_get_drvdata(mdwc->dwc3);
@@ -4541,6 +4515,18 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 				atomic_read(&mdwc->dev->power.usage_count));
 			dwc3_otg_start_peripheral(mdwc, 1);
 			mdwc->drd_state = DRD_STATE_PERIPHERAL;
+
+#ifdef VENDOR_EDIT
+/* Yichun.Chen  PSW.BSP.CHG  2019-08-07  for detect CDP */
+			if (!dwc->softconnect && get_psy_type(mdwc) == POWER_SUPPLY_TYPE_USB_CDP) { 
+				dbg_event(0xFF, "cdp pullup dp", 0); 
+				reg = dwc3_readl(dwc->regs, DWC3_DCTL); 
+				reg |= DWC3_DCTL_RUN_STOP; 
+				dwc3_writel(dwc->regs, DWC3_DCTL, reg); 
+				break; 
+			}
+#endif
+
 			work = 1;
 		} else {
 			dwc3_msm_gadget_vbus_draw(mdwc, 0);
