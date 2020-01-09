@@ -43,6 +43,10 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/trace_msm_pil_event.h>
 
+#ifdef VENDOR_EDIT
+#include <soc/oppo/boot_mode.h>
+#endif /* VENDOR_EDIT */
+
 #include "peripheral-loader.h"
 
 #define pil_err(desc, fmt, ...)						\
@@ -59,28 +63,9 @@
 #define PIL_NUM_DESC		10
 #define MAX_LEN 96
 #define NUM_OF_ENCRYPTED_KEY	3
-#define MINIDUMP_DEBUG_PROP "qcom,msm-imem-minidump-debug"
 
 static void __iomem *pil_info_base;
-static void __iomem *minidump_debug;
 static struct md_global_toc *g_md_toc;
-
-static void *map_prop(const char *propname)
-{
-	struct device_node *np = of_find_compatible_node(NULL, NULL, propname);
-	void *addr;
-
-	if (!np) {
-		pr_err("Unable to find DT property: %s\n", propname);
-		return NULL;
-	}
-
-	addr = of_iomap(np, 0);
-	if (!addr)
-		pr_err("Unable to map memory for DT property: %s\n", propname);
-
-	return addr;
-}
 
 /**
  * proxy_timeout - Override for proxy vote timeouts
@@ -467,6 +452,10 @@ int pil_do_ramdump(struct pil_desc *desc,
 	struct pil_seg *seg;
 	int count = 0, ret;
 
+
+
+
+
 	if (desc->minidump_ss) {
 		pr_debug("Minidump : md_ss_toc->md_ss_toc_init is 0x%x\n",
 			(unsigned int)desc->minidump_ss->md_ss_toc_init);
@@ -482,9 +471,6 @@ int pil_do_ramdump(struct pil_desc *desc,
 
 		print_aux_minidump_tocs(desc);
 
-		if (minidump_debug)
-			pr_info("Minidump debug cookie=%x\n",
-				__raw_readl(minidump_debug));
 		/**
 		 * Collect minidump if SS ToC is valid and segment table
 		 * is initialized in memory and encryption status is set.
@@ -495,7 +481,7 @@ int pil_do_ramdump(struct pil_desc *desc,
 				MD_SS_ENABLED)) {
 			if (desc->minidump_ss->encryption_status ==
 			    MD_SS_ENCR_DONE) {
-				pr_debug("Dumping Minidump for %s\n",
+				pr_info("Dumping Minidump for %s\n",
 					desc->name);
 				return pil_do_minidump(desc, minidump_dev);
 			}
@@ -528,6 +514,10 @@ int pil_do_ramdump(struct pil_desc *desc,
 	if (ret)
 		pil_err(desc, "%s: Ramdump collection failed for subsys %s rc:%d\n",
 				__func__, desc->name, ret);
+
+
+
+
 
 	if (desc->subsys_vmid > 0)
 		ret = pil_assign_mem_to_subsys(desc, priv->region_start,
@@ -1378,6 +1368,11 @@ int pil_boot(struct pil_desc *desc)
 	ret = desc->ops->auth_and_reset(desc);
 	if (ret) {
 		pil_err(desc, "Failed to bring out of reset(rc:%d)\n", ret);
+	#ifdef VENDOR_EDIT
+	/*xing.xiong@BSP.Kernel.Driver, 2019/08/29, Add for avoid */
+		if ((get_boot_mode() == MSM_BOOT_MODE__NORMAL) && (ret == -EBUSY))
+			panic("fatal load image");
+	#endif
 		goto err_auth_and_reset;
 	}
 	trace_pil_event("reset_done", desc);
@@ -1698,8 +1693,6 @@ static int __init msm_pil_init(void)
 		return -EPROBE_DEFER;
 	}
 
-	minidump_debug = map_prop(MINIDUMP_DEBUG_PROP);
-
 	pil_wq = alloc_workqueue("pil_workqueue", WQ_HIGHPRI | WQ_UNBOUND, 0);
 	if (!pil_wq)
 		pr_warn("pil: Defaulting to sequential firmware loading.\n");
@@ -1716,8 +1709,6 @@ static void __exit msm_pil_exit(void)
 	unregister_pm_notifier(&pil_pm_notifier);
 	if (pil_info_base)
 		iounmap(pil_info_base);
-	if (minidump_debug)
-		iounmap(minidump_debug);
 }
 module_exit(msm_pil_exit);
 
