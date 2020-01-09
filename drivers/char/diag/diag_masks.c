@@ -907,8 +907,7 @@ static int diag_cmd_set_msg_mask(unsigned char *src_buf, int src_len,
 		goto end;
 	if (mask_size + write_len > dest_len)
 		mask_size = dest_len - write_len;
-	if (mask_size && src_len >= header_len + mask_size)
-		memcpy(dest_buf + write_len, src_buf + header_len, mask_size);
+	memcpy(dest_buf + write_len, src_buf + header_len, mask_size);
 	write_len += mask_size;
 	for (i = 0; i < NUM_MD_SESSIONS; i++) {
 		if (i == APPS_DATA)
@@ -1092,7 +1091,7 @@ static int diag_cmd_update_event_mask(unsigned char *src_buf, int src_len,
 	}
 
 	mutex_lock(&mask_info->lock);
-	if (src_len >= header_len + mask_len - 1)
+	if (src_len >= header_len + mask_len)
 		memcpy(mask_info->ptr, src_buf + header_len, mask_len);
 	mask_info->status = DIAG_CTRL_MASK_VALID;
 	mutex_unlock(&mask_info->lock);
