@@ -111,7 +111,7 @@ static ssize_t debugfs_state_info_read(struct file *file,
 			dsi_ctrl->clk_freq.pix_clk_rate,
 			dsi_ctrl->clk_freq.esc_clk_rate);
 
-	len = min_t(size_t, len, SZ_4K);
+	/* TODO: make sure that this does not exceed 4K */
 	if (copy_to_user(buff, buf, len)) {
 		kfree(buf);
 		return -EFAULT;
@@ -166,7 +166,8 @@ static ssize_t debugfs_reg_dump_read(struct file *file,
 		return rc;
 	}
 
-	len = min_t(size_t, len, SZ_4K);
+
+	/* TODO: make sure that this does not exceed 4K */
 	if (copy_to_user(buff, buf, len)) {
 		kfree(buf);
 		return -EFAULT;
@@ -1086,6 +1087,10 @@ int dsi_message_validate_tx_mode(struct dsi_ctrl *dsi_ctrl,
 
 	return rc;
 }
+#ifdef VENDOR_EDIT
+/*liping-m@PSW.MM.Display.LCD.Stable,2018-09-26 add to debug smmu page fault error */
+static struct dsi_ctrl *global_dsi_ctrl;
+#endif /* VENDOR_EDIT */
 
 static int dsi_message_tx(struct dsi_ctrl *dsi_ctrl,
 			  const struct mipi_dsi_msg *msg,
@@ -1162,7 +1167,18 @@ static int dsi_message_tx(struct dsi_ctrl *dsi_ctrl,
 		cmd_mem.use_lpm = (msg->flags & MIPI_DSI_MSG_USE_LPM) ?
 			true : false;
 
+		#ifdef VENDOR_EDIT
+		/*liping-m@PSW.MM.Display.LCD.Stable,2018-09-26 add to debug smmu page fault error */
+		global_dsi_ctrl = dsi_ctrl;
+		#endif /* VENDOR_EDIT */
 		cmdbuf = (u8 *)(dsi_ctrl->vaddr);
+		//#ifdef VENDOR_EDIT
+		/*Jie.Hu@PSW.MM.Display.Lcd.Stability, 2018-04-14,add to solve smmu page fault error*/
+		if (cmdbuf == NULL) {
+			pr_err("dsi_message_tx and cmdbuf is null\n");
+			goto error;
+		}
+		//#endif
 
 		msm_gem_sync(dsi_ctrl->tx_cmd_buf);
 		for (cnt = 0; cnt < length; cnt++)
@@ -2317,7 +2333,12 @@ static void dsi_ctrl_handle_error_status(struct dsi_ctrl *dsi_ctrl,
 							0, 0, 0, 0);
 			}
 		}
+		#ifndef VENDOR_EDIT
+		/*liping-m@PSW.MM.Display.Lcd.Stability, 2018-09-26,avoid printk too often*/
 		pr_err("tx timeout error: 0x%lx\n", error);
+		#else
+		pr_err_ratelimited("tx timeout error: 0x%lx\n", error);
+		#endif
 	}
 
 	/* DSI FIFO OVERFLOW error */

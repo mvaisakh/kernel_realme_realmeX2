@@ -401,8 +401,7 @@ static void dp_display_hdcp_cb_work(struct work_struct *work)
 
 	dp_display_update_hdcp_status(dp, false);
 
-	if (status->hdcp_state != HDCP_STATE_AUTHENTICATED &&
-		dp->debug->force_encryption && ops && ops->force_encryption)
+	if (dp->debug->force_encryption && ops && ops->force_encryption)
 		ops->force_encryption(data, dp->debug->force_encryption);
 
 	switch (status->hdcp_state) {
@@ -1043,8 +1042,10 @@ static int dp_display_usbpd_disconnect_cb(struct device *dev)
 		goto end;
 	}
 
+	mutex_lock(&dp->session_lock);
 	if (dp->debug->psm_enabled && dp->core_initialized)
 		dp->link->psm_config(dp->link, &dp->panel->link_info, true);
+	mutex_unlock(&dp->session_lock);
 
 	dp_display_disconnect_sync(dp);
 

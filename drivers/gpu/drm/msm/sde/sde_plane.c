@@ -2896,6 +2896,22 @@ void sde_plane_clear_multirect(const struct drm_plane_state *drm_state)
 	pstate->multirect_index = SDE_SSPP_RECT_SOLO;
 	pstate->multirect_mode = SDE_SSPP_MULTIRECT_NONE;
 }
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.Service.Feature,2018/11/21
+ * For OnScreenFingerprint feature temp modify
+*/
+int sde_plane_check_fingerprint_layer(const struct drm_plane_state *drm_state)
+{
+	struct sde_plane_state *pstate;
+
+	if (!drm_state)
+		return 0;
+
+	pstate = to_sde_plane_state(drm_state);
+
+	return sde_plane_get_property(pstate, PLANE_PROP_CUSTOM);
+}
+#endif
 
 /**
  * multi_rect validate API allows to validate only R0 and R1 RECT
@@ -3869,7 +3885,7 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 	if (psde->revalidate) {
 		SDE_DEBUG("plane:%d - reconfigure all the parameters\n",
 				plane->base.id);
-		pstate->dirty = SDE_PLANE_DIRTY_ALL;
+		pstate->dirty = SDE_PLANE_DIRTY_ALL | SDE_PLANE_DIRTY_CP;
 		psde->revalidate = false;
 	}
 
@@ -3903,6 +3919,12 @@ static int sde_plane_sspp_atomic_update(struct drm_plane *plane,
 		case PLANE_PROP_ALPHA:
 		case PLANE_PROP_INPUT_FENCE:
 		case PLANE_PROP_BLEND_OP:
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Feature,2018-11-21
+ * Support custom property
+*/
+		case PLANE_PROP_CUSTOM:
+#endif /* VENDOR_EDIT */
 			/* no special action required */
 			break;
 		case PLANE_PROP_FB_TRANSLATION_MODE:
@@ -4331,6 +4353,13 @@ static void _sde_plane_install_properties(struct drm_plane *plane,
 
 	msm_property_install_range(&psde->property_info, "zpos",
 		0x0, 0, zpos_max, zpos_def, PLANE_PROP_ZPOS);
+#ifdef VENDOR_EDIT
+/* Gou shengjun@PSW.MM.Display.LCD.Feature,2018-11-21
+ * Support custom propertys
+*/
+	msm_property_install_range(&psde->property_info,"PLANE_CUST",
+		0x0, 0, INT_MAX, 0, PLANE_PROP_CUSTOM);
+#endif
 
 	msm_property_install_range(&psde->property_info, "alpha",
 		0x0, 0, 255, 255, PLANE_PROP_ALPHA);
@@ -5202,7 +5231,7 @@ static int _sde_plane_init_debugfs(struct drm_plane *plane)
 		return -ENOMEM;
 
 	/* don't error check these */
-	debugfs_create_x32("features", 0400,
+	debugfs_create_x32("features", 0600,
 			psde->debugfs_root, &psde->features);
 
 	/* add register dump support */
