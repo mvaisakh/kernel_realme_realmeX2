@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1060,13 +1060,12 @@ static void vco_7nm_unprepare(struct clk_hw *hw)
 		return;
 	}
 
+	pll->cached_cfg0 = MDSS_PLL_REG_R(pll->phy_base, PHY_CMN_CLK_CFG0);
 	/*
 	 * During unprepare in continuous splash use case we want driver
 	 * to pick all dividers instead of retaining bootloader configurations.
 	 */
 	if (!pll->handoff_resources) {
-		pll->cached_cfg0 = MDSS_PLL_REG_R(pll->phy_base,
-							PHY_CMN_CLK_CFG0);
 		pll->cached_outdiv = MDSS_PLL_REG_R(pll->pll_base,
 							PLL_PLL_OUTDIV_RATE);
 		pr_debug("cfg0=%d,cfg1=%d, outdiv=%d\n", pll->cached_cfg0,
@@ -1082,9 +1081,11 @@ static void vco_7nm_unprepare(struct clk_hw *hw)
 	 * does not change.For such usecases, we need to ensure that the cached
 	 * value is programmed prior to PLL being locked
 	 */
-	if (pll->handoff_resources)
+	if (pll->handoff_resources) {
 		pll->cached_cfg1 = MDSS_PLL_REG_R(pll->phy_base,
 							PHY_CMN_CLK_CFG1);
+		pll->set_cfg0_flag = 1;
+	}
 
 	dsi_pll_disable(vco);
 	mdss_pll_resource_enable(pll, false);
@@ -1130,6 +1131,12 @@ static int vco_7nm_prepare(struct clk_hw *hw)
 					pll->cached_outdiv);
 	}
 
+	if (pll->set_cfg0_flag) {
+		MDSS_PLL_REG_W(pll->phy_base, PHY_CMN_CLK_CFG0,
+					pll->cached_cfg0);
+		pll->set_cfg0_flag = 0;
+	}
+
 	rc = dsi_pll_enable(vco);
 	if (rc) {
 		mdss_pll_resource_enable(pll, false);
@@ -1146,6 +1153,13 @@ static unsigned long vco_7nm_recalc_rate(struct clk_hw *hw,
 	struct dsi_pll_vco_clk *vco = to_vco_clk_hw(hw);
 	struct mdss_pll_resources *pll = vco->priv;
 	int rc;
+	u64 ref_clk = vco->ref_clk_rate;
+	u64 vco_rate = 0;
+	u64 multiplier;
+	u32 frac;
+	u32 dec;
+	u32 outdiv;
+	u64 pll_freq, tmp64;
 
 	if (!vco->priv) {
 		pr_err("vco priv is null\n");
@@ -1153,10 +1167,12 @@ static unsigned long vco_7nm_recalc_rate(struct clk_hw *hw,
 	}
 
 	/*
-	 * In the case when vco arte is set, the recalculation function should
-	 * return the current rate as to avoid trying to set the vco rate
-	 * again. However durng handoff, recalculation should set the flag
-	 * according to the status of PLL.
+	 * Calculate the vco rate from HW registers only for handoff cases.
+	 * For other cases where a vco_10nm_set_rate() has already been
+	 * called, just return the rate that was set earlier. This is due
+	 * to the fact that recalculating VCO rate requires us to read the
+	 * correct value of the pll_out_div divider clock, which is only set
+	 * afterwards.
 	 */
 	if (pll->vco_current_rate != 0) {
 		pr_debug("returning vco rate = %lld\n", pll->vco_current_rate);
@@ -1174,10 +1190,43 @@ static unsigned long vco_7nm_recalc_rate(struct clk_hw *hw,
 	if (dsi_pll_7nm_lock_status(pll)) {
 		pr_debug("PLL not enabled\n");
 		pll->handoff_resources = false;
+		goto end;
 	}
 
+	dec = MDSS_PLL_REG_R(pll->pll_base, PLL_DECIMAL_DIV_START_1);
+	dec &= 0xFF;
+
+	frac = MDSS_PLL_REG_R(pll->pll_base, PLL_FRAC_DIV_START_LOW_1);
+	frac |= ((MDSS_PLL_REG_R(pll->pll_base, PLL_FRAC_DIV_START_MID_1) &
+		  0xFF) <<
+		8);
+	frac |= ((MDSS_PLL_REG_R(pll->pll_base, PLL_FRAC_DIV_START_HIGH_1) &
+		  0x3) <<
+		16);
+
+	/* OUTDIV_1:0 field is (log(outdiv, 2)) */
+	outdiv = MDSS_PLL_REG_R(pll->pll_base, PLL_PLL_OUTDIV_RATE);
+	outdiv &= 0x3;
+	outdiv = 1 << outdiv;
+
+	/*
+	 * TODO:
+	 *	1. Assumes prescaler is disabled
+	 *	2. Multiplier is 2^18. it should be 2^(num_of_frac_bits)
+	 **/
+	multiplier = 1 << 18;
+	pll_freq = dec * (ref_clk * 2);
+	tmp64 = (ref_clk * 2 * frac);
+	pll_freq += div_u64(tmp64, multiplier);
+
+	vco_rate = div_u64(pll_freq, outdiv);
+
+	pr_debug("dec=0x%x, frac=0x%x, outdiv=%d, vco=%llu\n",
+		 dec, frac, outdiv, vco_rate);
+
+end:
 	(void)mdss_pll_resource_enable(pll, false);
-	return rc;
+	return (unsigned long)vco_rate;
 }
 
 static int pixel_clk_get_div(void *context, unsigned int reg, unsigned int *div)
