@@ -57,7 +57,6 @@ struct qg_dt {
 	int			esr_disable_soc;
 	int			esr_min_ibat_ua;
 	int			shutdown_soc_threshold;
-	int			tcss_entry_soc;
 	bool			hold_soc_while_full;
 	bool			linearize_soc;
 	bool			cl_disable;
@@ -65,7 +64,6 @@ struct qg_dt {
 	bool			esr_disable;
 	bool			esr_discharge_enable;
 	bool			qg_ext_sense;
-	bool			tcss_enable;
 };
 
 struct qg_esr_data {
@@ -126,7 +124,6 @@ struct qpnp_qg {
 	bool			dc_present;
 	bool			charge_full;
 	bool			force_soc;
-	bool			tcss_active;
 	int			charge_status;
 	int			charge_type;
 	int			chg_iterm_ma;
@@ -135,12 +132,6 @@ struct qpnp_qg {
 	int			esr_nominal;
 	int			soh;
 	int			soc_reporting_ready;
-	int			last_fifo_i_ua;
-	int			prev_fifo_i_ua;
-	int			soc_tcss_entry;
-	int			ibat_tcss_entry;
-	int			soc_tcss;
-	int			tcss_entry_count;
 	u32			fifo_done_count;
 	u32			wa_flags;
 	u32			seq_no;

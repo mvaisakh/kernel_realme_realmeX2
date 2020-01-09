@@ -352,8 +352,6 @@ static int qg_process_fifo(struct qpnp_qg *chip, u32 fifo_length)
 		chip->kdata.fifo[j].interval = sample_interval;
 		chip->kdata.fifo[j].count = sample_count;
 
-		chip->last_fifo_i_ua = chip->kdata.fifo[j].i;
-
 		qg_dbg(chip, QG_DEBUG_FIFO, "FIFO %d raw_v=%d uV=%d raw_i=%d uA=%d interval=%d count=%d\n",
 					j, fifo_v,
 					chip->kdata.fifo[j].v,
@@ -417,8 +415,6 @@ static int qg_process_accumulator(struct qpnp_qg *chip)
 	chip->kdata.fifo_length++;
 	if (chip->kdata.fifo_length == MAX_FIFO_LENGTH)
 		chip->kdata.fifo_length = MAX_FIFO_LENGTH - 1;
-
-	chip->last_fifo_i_ua = chip->kdata.fifo[index].i;
 
 	if (chip->kdata.fifo_length == 1)	/* Only accumulator data */
 		chip->kdata.seq_no = chip->seq_no++ % U32_MAX;
@@ -1619,7 +1615,7 @@ static int qg_get_ttf_param(void *data, enum ttf_param param, int *val)
 		break;
 	case TTF_MODE:
 		if (chip->ttf->step_chg_cfg_valid)
-			*val = TTF_MODE_VBAT_STEP_CHG;
+			*val = TTF_MODE_V_STEP_CHG;
 		else
 			*val = TTF_MODE_NORMAL;
 		break;
@@ -2362,12 +2358,6 @@ static ssize_t qg_device_read(struct file *file, char __user *buf, size_t count,
 	struct qpnp_qg *chip = file->private_data;
 	unsigned long data_size = sizeof(chip->kdata);
 
-	if (count < data_size) {
-		pr_err("Invalid datasize %lu, expected lesser then %zu\n",
-							data_size, count);
-		return -EINVAL;
-	}
-
 	/* non-blocking access, return */
 	if (!chip->data_ready && (file->f_flags & O_NONBLOCK))
 		return 0;
@@ -2955,39 +2945,6 @@ static int qg_set_wa_flags(struct qpnp_qg *chip)
 	return 0;
 }
 
-#define SDAM_MAGIC_NUMBER		0x12345678
-static int qg_sanitize_sdam(struct qpnp_qg *chip)
-{
-	int rc = 0;
-	u32 data = 0;
-
-	rc = qg_sdam_read(SDAM_MAGIC, &data);
-	if (rc < 0) {
-		pr_err("Failed to read SDAM rc=%d\n", rc);
-		return rc;
-	}
-
-	if (data == SDAM_MAGIC_NUMBER) {
-		qg_dbg(chip, QG_DEBUG_PON, "SDAM valid\n");
-	} else if (data == 0) {
-		rc = qg_sdam_write(SDAM_MAGIC, SDAM_MAGIC_NUMBER);
-		if (!rc)
-			qg_dbg(chip, QG_DEBUG_PON, "First boot. SDAM initilized\n");
-	} else {
-		/* SDAM has invalid value */
-		rc = qg_sdam_clear();
-		if (!rc) {
-			pr_err("SDAM uninitialized, SDAM reset\n");
-			rc = qg_sdam_write(SDAM_MAGIC, SDAM_MAGIC_NUMBER);
-		}
-	}
-
-	if (rc < 0)
-		pr_err("Failed in SDAM operation, rc=%d\n", rc);
-
-	return rc;
-}
-
 #define ADC_CONV_DLY_512MS		0xA
 static int qg_hw_init(struct qpnp_qg *chip)
 {
@@ -3401,7 +3358,6 @@ static int qg_alg_init(struct qpnp_qg *chip)
 #define DEFAULT_ESR_QUAL_VBAT_UV	7000
 #define DEFAULT_ESR_DISABLE_SOC		1000
 #define ESR_CHG_MIN_IBAT_UA		(-450000)
-#define DEFAULT_TCSS_ENTRY_SOC		90
 static int qg_parse_dt(struct qpnp_qg *chip)
 {
 	int rc = 0;
@@ -3639,18 +3595,6 @@ static int qg_parse_dt(struct qpnp_qg *chip)
 		chip->dt.shutdown_soc_threshold = temp;
 
 	chip->dt.qg_ext_sense = of_property_read_bool(node, "qcom,qg-ext-sns");
-
-	if (of_property_read_bool(node, "qcom,tcss-enable")) {
-
-		chip->dt.tcss_enable = true;
-
-		rc = of_property_read_u32(node,
-				"qcom,tcss-entry-soc", &temp);
-		if (rc < 0)
-			chip->dt.tcss_entry_soc = DEFAULT_TCSS_ENTRY_SOC;
-		else
-			chip->dt.tcss_entry_soc = temp;
-	}
 
 	/* Capacity learning params*/
 	if (!chip->dt.cl_disable) {
@@ -4020,12 +3964,6 @@ static int qpnp_qg_probe(struct platform_device *pdev)
 	rc = qg_sdam_init(chip->dev);
 	if (rc < 0) {
 		pr_err("Failed to initialize QG SDAM, rc=%d\n", rc);
-		return rc;
-	}
-
-	rc = qg_sanitize_sdam(chip);
-	if (rc < 0) {
-		pr_err("Failed to sanitize SDAM, rc=%d\n", rc);
 		return rc;
 	}
 
